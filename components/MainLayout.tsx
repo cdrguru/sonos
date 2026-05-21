@@ -125,8 +125,22 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
       icon: 'spotify',
       color: '#1db954',
       tracks: [
-        { id: 'sp1', title: 'Late Night Chill', artist: 'Lofi Generator', duration: 180, artwork: '' },
-        { id: 'sp2', title: 'Midnight Espresso', artist: 'Hazy Beats', duration: 210, artwork: '' },
+        {
+          id: 'sp1',
+          title: 'Late Night Chill',
+          artist: 'Lofi Generator',
+          duration: 180,
+          artwork: 'https://images.unsplash.com/photo-1518609878373-06d740f60d8b?w=150&q=80',
+          url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'
+        },
+        {
+          id: 'sp2',
+          title: 'Midnight Espresso',
+          artist: 'Hazy Beats',
+          duration: 210,
+          artwork: 'https://images.unsplash.com/photo-1507133750040-4a8f57021571?w=150&q=80',
+          url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3'
+        },
       ],
     },
     {
@@ -135,8 +149,22 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
       icon: 'apple',
       color: '#fc3c44',
       tracks: [
-        { id: 'ap1', title: 'Essentials Mix 2026', artist: 'Apple Curated', duration: 250, artwork: '' },
-        { id: 'ap2', title: 'Classical Focus', artist: 'Symphony Hall', duration: 320, artwork: '' },
+        {
+          id: 'ap1',
+          title: 'Essentials Mix 2026',
+          artist: 'Apple Curated',
+          duration: 250,
+          artwork: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=150&q=80',
+          url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3'
+        },
+        {
+          id: 'ap2',
+          title: 'Classical Focus',
+          artist: 'Symphony Hall',
+          duration: 320,
+          artwork: 'https://images.unsplash.com/photo-1465847899084-d164df4dedc6?w=150&q=80',
+          url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3'
+        },
       ],
     },
     {
@@ -145,8 +173,22 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
       icon: 'nas',
       color: '#eab308',
       tracks: [
-        { id: 'nas1', title: 'Hotel California (Remaster)', artist: 'Eagles', duration: 390, artwork: '' },
-        { id: 'nas2', title: 'Stairway to Heaven', artist: 'Led Zeppelin', duration: 482, artwork: '' },
+        {
+          id: 'nas1',
+          title: 'Hotel California (Remaster)',
+          artist: 'Eagles',
+          duration: 390,
+          artwork: 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=150&q=80',
+          url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3'
+        },
+        {
+          id: 'nas2',
+          title: 'Stairway to Heaven',
+          artist: 'Led Zeppelin',
+          duration: 482,
+          artwork: 'https://images.unsplash.com/photo-1506157786151-b8491531f063?w=150&q=80',
+          url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3'
+        },
       ],
     },
   ];
@@ -159,8 +201,9 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
       id: track.id,
       title: track.title,
       artist: track.artist,
-      artwork: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=150&auto=format&fit=crop&q=60',
+      artwork: track.artwork,
       duration: track.duration,
+      url: track.url,
     };
     
     stateStore.playTrackFromQueue(selectedSpeaker.id, queueItem);
@@ -267,9 +310,9 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                           id: `q-${Date.now()}-${track.id}`,
                           title: track.title,
                           artist: track.artist,
-                          artwork:
-                            'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=150&auto=format&fit=crop&q=60',
+                          artwork: track.artwork,
                           duration: track.duration,
+                          url: track.url,
                         })
                       }
                       accessibilityLabel={`Add ${track.title} to queue`}
@@ -360,7 +403,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
         ) : (
           <View style={styles.logsContainer}>
             {/* Simulation controllers */}
-            <View style={styles.simButtonsRow}>
+             <View style={styles.simButtonsRow}>
               <TouchableOpacity
                 style={styles.simBtn}
                 onPress={() => discoveryEngine.simulateNetworkEvent('new_speaker')}
@@ -381,6 +424,13 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
               >
                 <Ionicons name="refresh" size={11} color="#60a5fa" />
                 <Text style={styles.simBtnText}>Recover</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.simBtn}
+                onPress={() => discoveryEngine.simulateNetworkEvent('large_subnet')}
+              >
+                <Ionicons name="server" size={11} color="#c084fc" />
+                <Text style={styles.simBtnText}>Large Net</Text>
               </TouchableOpacity>
             </View>
 

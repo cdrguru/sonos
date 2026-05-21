@@ -1,8 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { bridgeClient } from './bridgeClient';
+import type { BridgeEvent, BridgePlayer } from './bridgeProtocol';
 
 export interface SpeakerEQ {
-  bass: number;      // -10..+10
-  treble: number;    // -10..+10
+  bass: number; // -10..+10
+  treble: number; // -10..+10
   loudness: boolean;
   nightMode: boolean;
 }
@@ -23,16 +25,17 @@ export interface Speaker {
   muted?: boolean;
   eq?: SpeakerEQ;
   isUncalibrated?: boolean;
-  zoneId: string | null; // null if independent, otherwise shared zone ID
+  zoneId: string | null;
   model: string;
-  pathway?: 'local' | 'cloud'; // Current connection routing path
+  pathway?: 'local' | 'cloud';
   currentTrack?: {
     title: string;
     artist: string;
     album: string;
     artwork: string;
-    duration: number; // in seconds
-    progress: number; // in seconds
+    duration: number;
+    progress: number;
+    url?: string;
   };
 }
 
@@ -40,172 +43,141 @@ export interface NetworkLog {
   timestamp: string;
   level: 'info' | 'warn' | 'success' | 'error';
   message: string;
-  protocol: 'SSDP' | 'mDNS' | 'CACHE' | 'PING' | 'SYSTEM' | 'CLOUD';
+  protocol:
+    | 'SSDP'
+    | 'mDNS'
+    | 'CACHE'
+    | 'PING'
+    | 'SYSTEM'
+    | 'CLOUD'
+    | 'UPnP'
+    | 'GENA'
+    | 'BRIDGE';
 }
 
 const STORAGE_KEY = '@sonos_vnext_speaker_registry';
 
-// Initial Mock Speakers
-const INITIAL_SPEAKERS: Speaker[] = [
-  {
-    id: 'spk-living-room',
-    name: 'Living Room',
-    ip: '192.168.1.101',
-    status: 'playing',
-    volume: 45,
-    zoneId: null,
-    model: 'Sonos Era 300',
-    pathway: 'local',
-    currentTrack: {
-      title: 'Ocean Eyes',
-      artist: 'Billie Eilish',
-      album: 'Dont Smile at Me',
-      artwork: 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=150&auto=format&fit=crop&q=60',
-      duration: 200,
-      progress: 45,
+function mapBridgePlayerToSpeaker(p: BridgePlayer): Speaker {
+  const inZone = p.zoneMemberIds.length > 1;
+  return {
+    id: p.id,
+    name: p.name,
+    ip: p.ip,
+    status: p.status,
+    volume: p.volume,
+    muted: p.muted,
+    eq: {
+      bass: p.bass,
+      treble: p.treble,
+      loudness: p.loudness,
+      nightMode: p.nightMode,
     },
-  },
-  {
-    id: 'spk-kitchen',
-    name: 'Kitchen',
-    ip: '192.168.1.102',
-    status: 'paused',
-    volume: 30,
-    zoneId: null,
-    model: 'Sonos Era 100',
+    zoneId: inZone ? `zone-${p.zoneCoordinatorId}` : null,
+    model: p.model,
     pathway: 'local',
-    currentTrack: {
-      title: 'Blinding Lights',
-      artist: 'The Weeknd',
-      album: 'After Hours',
-      artwork: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=150&auto=format&fit=crop&q=60',
-      duration: 200,
-      progress: 0,
-    },
-  },
-  {
-    id: 'spk-master-bedroom',
-    name: 'Master Bedroom',
-    ip: '192.168.1.103',
-    status: 'stopped',
-    volume: 20,
-    zoneId: null,
-    model: 'Sonos Move 2',
-    pathway: 'local',
-    currentTrack: {
-      title: 'Come Away With Me',
-      artist: 'Norah Jones',
-      album: 'Come Away With Me',
-      artwork: 'https://images.unsplash.com/photo-1459749411175-04bf5292ceea?w=150&auto=format&fit=crop&q=60',
-      duration: 198,
-      progress: 0,
-    },
-  },
-  {
-    id: 'spk-patio',
-    name: 'Patio',
-    ip: '192.168.1.104',
-    status: 'offline',
-    volume: 50,
-    zoneId: null,
-    model: 'Sonos Roam 2',
-    pathway: 'local',
-    currentTrack: undefined,
-  },
-  {
-    id: 'spk-office',
-    name: 'Home Office',
-    ip: '192.168.1.105',
-    status: 'playing',
-    volume: 35,
-    zoneId: null,
-    model: 'Sonos Five',
-    pathway: 'local',
-    currentTrack: {
-      title: 'Time',
-      artist: 'Pink Floyd',
-      album: 'The Dark Side of the Moon',
-      artwork: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=150&auto=format&fit=crop&q=60',
-      duration: 421,
-      progress: 180,
-    },
-  },
-];
+    currentTrack: p.currentTrack
+      ? {
+          title: p.currentTrack.title,
+          artist: p.currentTrack.artist,
+          album: p.currentTrack.album,
+          artwork: p.currentTrack.artwork,
+          duration: p.currentTrack.duration,
+          progress: p.currentTrack.progress,
+          url: p.currentTrack.url,
+        }
+      : undefined,
+  };
+}
 
 export class ResilientDiscoveryEngine {
   private speakers: Speaker[] = [];
   private listeners: ((speakers: Speaker[]) => void)[] = [];
   private logListeners: ((logs: NetworkLog[]) => void)[] = [];
-  private pingIntervalId: NodeJS.Timeout | null = null;
   private discoveryLogs: NetworkLog[] = [];
+  private unsubBridgeEvents: (() => void) | null = null;
+  private unsubBridgeTopology: (() => void) | null = null;
+  private unsubBridgeStatus: (() => void) | null = null;
 
   constructor() {
     this.addLog('SYSTEM', 'info', 'ResilientDiscoveryEngine initialized.');
   }
 
-  public addLog(protocol: NetworkLog['protocol'], level: NetworkLog['level'], message: string) {
+  public addLog(
+    protocol: NetworkLog['protocol'],
+    level: NetworkLog['level'],
+    message: string,
+  ) {
     const logEntry: NetworkLog = {
       timestamp: new Date().toLocaleTimeString(),
       level,
       message,
       protocol,
     };
-    this.discoveryLogs = [logEntry, ...this.discoveryLogs].slice(0, 80); // Keep last 80 logs
+    this.discoveryLogs = [logEntry, ...this.discoveryLogs].slice(0, 80);
     this.notifyLogListeners();
   }
 
-  /**
-   * Initializes the registry database and starts background network polling.
-   */
   async start() {
-    this.addLog('SYSTEM', 'info', 'Starting Network Discovery Engine...');
+    this.addLog('SYSTEM', 'info', 'Hydrating speaker registry from cache...');
     await this.loadSpeakersFromRegistry();
 
-    // Run parallel discovery path immediately
-    this.runParallelDiscovery();
+    this.addLog('BRIDGE', 'info', 'Connecting to LAN bridge at ws://localhost:8765');
+    this.unsubBridgeStatus = bridgeClient.subscribeStatus((status) => {
+      if (status === 'connected') {
+        this.addLog('BRIDGE', 'success', 'Bridge connected. Real LAN discovery online.');
+      } else if (status === 'disconnected') {
+        this.addLog('BRIDGE', 'warn', 'Bridge disconnected. Falling back to cached topology.');
+      } else if (status === 'connecting') {
+        this.addLog('BRIDGE', 'info', 'Bridge connecting...');
+      }
+    });
 
-    // Start background ping loop (every 5 seconds)
-    this.pingIntervalId = setInterval(() => {
-      this.runNetworkPings();
-    }, 5000);
+    this.unsubBridgeTopology = bridgeClient.subscribeTopology((players) => {
+      this.applyBridgeTopology(players);
+    });
+
+    this.unsubBridgeEvents = bridgeClient.subscribeEvents((event) => {
+      this.handleBridgeEvent(event);
+    });
+
+    bridgeClient.connect();
   }
 
-  /**
-   * Stops loops.
-   */
   stop() {
-    if (this.pingIntervalId) {
-      clearInterval(this.pingIntervalId);
-      this.pingIntervalId = null;
-    }
+    this.unsubBridgeEvents?.();
+    this.unsubBridgeTopology?.();
+    this.unsubBridgeStatus?.();
+    this.unsubBridgeEvents = null;
+    this.unsubBridgeTopology = null;
+    this.unsubBridgeStatus = null;
+    bridgeClient.disconnect();
     this.addLog('SYSTEM', 'info', 'Discovery Engine stopped.');
   }
 
-  /**
-   * Loads speakers from local registry (AsyncStorage SQLite alternative)
-   */
   private async loadSpeakersFromRegistry() {
     try {
       const data = await AsyncStorage.getItem(STORAGE_KEY);
       if (data) {
-        this.speakers = JSON.parse(data);
-        this.addLog('CACHE', 'success', `Registry DB check: loaded ${this.speakers.length} speakers.`);
+        const cached: Speaker[] = JSON.parse(data);
+        // Cached speakers come back as offline until the bridge confirms them.
+        this.speakers = cached.map((s) => ({ ...s, status: 'offline' as const }));
+        this.addLog(
+          'CACHE',
+          'success',
+          `Loaded ${this.speakers.length} cached speaker(s); awaiting bridge to mark live.`,
+        );
       } else {
-        this.speakers = [...INITIAL_SPEAKERS];
-        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(this.speakers));
-        this.addLog('SYSTEM', 'info', 'Initialized default speaker registry database.');
+        this.speakers = [];
+        this.addLog('SYSTEM', 'info', 'No cached registry. Waiting for first bridge sweep.');
       }
       this.notifyListeners();
     } catch (e: any) {
       this.addLog('SYSTEM', 'error', `Failed to load speaker registry: ${e.message}`);
-      this.speakers = [...INITIAL_SPEAKERS];
+      this.speakers = [];
       this.notifyListeners();
     }
   }
 
-  /**
-   * Saves updated speakers to the registry database
-   */
   private async persistSpeakers() {
     try {
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(this.speakers));
@@ -214,228 +186,127 @@ export class ResilientDiscoveryEngine {
     }
   }
 
+  private applyBridgeTopology(players: BridgePlayer[]) {
+    const incoming = players.map(mapBridgePlayerToSpeaker);
+    const incomingIds = new Set(incoming.map((s) => s.id));
+
+    // Existing speakers not in the new topology are kept but marked offline.
+    const merged: Speaker[] = [...incoming];
+    for (const old of this.speakers) {
+      if (!incomingIds.has(old.id)) {
+        merged.push({ ...old, status: 'offline' });
+      }
+    }
+
+    this.speakers = merged;
+    this.addLog(
+      'SSDP',
+      'success',
+      `Bridge topology applied: ${incoming.length} live player(s).`,
+    );
+    void this.persistSpeakers();
+    this.notifyListeners();
+  }
+
+  private handleBridgeEvent(event: BridgeEvent) {
+    if (event.type === 'player.volume') {
+      this.speakers = this.speakers.map((s) =>
+        s.id === event.playerId ? { ...s, volume: event.volume, muted: event.muted } : s,
+      );
+      this.notifyListeners();
+    } else if (event.type === 'player.transport') {
+      this.speakers = this.speakers.map((s) => {
+        if (s.id !== event.playerId) return s;
+        return {
+          ...s,
+          status: event.status,
+          currentTrack: event.currentTrack
+            ? {
+                title: event.currentTrack.title,
+                artist: event.currentTrack.artist,
+                album: event.currentTrack.album,
+                artwork: event.currentTrack.artwork,
+                duration: event.currentTrack.duration,
+                progress: event.currentTrack.progress,
+                url: event.currentTrack.url,
+              }
+            : undefined,
+        };
+      });
+      this.notifyListeners();
+    } else if (event.type === 'log') {
+      const proto: NetworkLog['protocol'] =
+        event.protocol === 'UPnP' || event.protocol === 'GENA' || event.protocol === 'SSDP'
+          ? event.protocol
+          : 'BRIDGE';
+      this.addLog(proto, event.level, event.message);
+    }
+  }
+
   /**
-   * Simulates multi-path parallel discovery: SSDP, mDNS, and Cache
+   * Trigger a fresh SSDP sweep via the bridge.
    */
   async runParallelDiscovery() {
-    this.addLog('SYSTEM', 'info', 'Triggering multi-path parallel discovery sweep...');
-
-    // Path 1: SSDP (Simple Service Discovery Protocol)
-    const ssdpPromise = new Promise<void>((resolve) => {
-      setTimeout(() => {
-        // Output real-world wire broadcast request
-        const msearchPayload = `M-SEARCH * HTTP/1.1
-HOST: 239.255.255.250:1900
-MAN: "ssdp:discover"
-MX: 1
-ST: urn:schemas-upnp-org:device:ZonePlayer:1`;
-        
-        this.addLog('SSDP', 'info', `SSDP Broadcast Multicast Sent:\n${msearchPayload}`);
-
-        // Output real replies from active speakers
-        this.speakers.forEach((s) => {
-          if (s.status !== 'offline') {
-            // Restore speaker to local routing path upon successful LAN discovery
-            s.pathway = 'local';
-            
-            const reply = `HTTP/1.1 200 OK
-CACHE-CONTROL: max-age = 1800
-LOCATION: http://${s.ip}:1400/xml/device_description.xml
-USN: uuid:RINCON_${s.id.toUpperCase()}_01400::urn:schemas-upnp-org:device:ZonePlayer:1`;
-            this.addLog('SSDP', 'success', `SSDP Unicast Reply from ${s.name} (${s.ip}):\n${reply}`);
-
-            // Simulate Device XML parsing logic
-            const simulatedXml = `<device>
-  <roomName>${s.name}</roomName>
-  <displayName>${s.model}</displayName>
-  <UDN>uuid:RINCON_${s.id.toUpperCase()}_01400</UDN>
-</device>`;
-            this.addLog('SSDP', 'success', `Parsed Room XML for ${s.name}:\n${simulatedXml}`);
-          }
-        });
-        resolve();
-      }, 100);
-    });
-
-    // Path 2: mDNS (Multicast DNS)
-    const mdnsPromise = new Promise<void>((resolve) => {
-      setTimeout(() => {
-        this.addLog('mDNS', 'info', 'mDNS Query: TXT PTR records for _sonos._tcp.local');
-        this.speakers.forEach((s) => {
-          if (s.status !== 'offline') {
-            this.addLog('mDNS', 'success', `mDNS Service Discovered: _sonos-${s.id}._tcp.local -> ${s.ip}:1400`);
-          }
-        });
-        resolve();
-      }, 80);
-    });
-
-    // Path 3: Historical IP Cache Ping
-    const cachePromise = new Promise<void>((resolve) => {
-      setTimeout(async () => {
-        this.addLog('CACHE', 'info', 'Registry cache query: sweeping historical subnet nodes');
-        this.speakers.forEach((spk) => {
-          this.addLog('CACHE', 'success', `Cache match: Verified speaker ${spk.name} at IP ${spk.ip}`);
-        });
-        resolve();
-      }, 40);
-    });
-
-    // Wait for all queries in parallel
-    await Promise.all([ssdpPromise, mdnsPromise, cachePromise]);
-    this.addLog('SYSTEM', 'success', 'Dual-protocol topology discovery stable.');
-    this.notifyListeners();
-  }
-
-  /**
-   * Background health checks (fired every 5 seconds).
-   * Simulates network latency fluctuations, offline state transitions, and music track progress updates.
-   */
-  private async runNetworkPings() {
-    let changed = false;
-
-    this.speakers = this.speakers.map((spk) => {
-      // 1. Simulating random connection drops for the Patio (goes online/offline)
-      if (spk.id === 'spk-patio') {
-        const wasOffline = spk.status === 'offline';
-        const transition = Math.random() > 0.7; // 30% chance to toggle Patio status
-        if (transition) {
-          const nextStatus = wasOffline ? 'stopped' : 'offline';
-          
-          if (nextStatus === 'offline') {
-            this.addLog('PING', 'warn', `Patio (${spk.ip}) heartbeat lost. Dropping connection.`);
-          } else {
-            // Log real SSDP notify alive payload
-            const notify = `NOTIFY * HTTP/1.1
-HOST: 239.255.255.250:1900
-LOCATION: http://${spk.ip}:1400/xml/device_description.xml
-NTS: ssdp:alive`;
-            this.addLog('SSDP', 'success', `Periodic NOTIFY multicast received:\n${notify}`);
-            spk.pathway = 'local';
-          }
-          changed = true;
-          return { ...spk, status: nextStatus, volume: nextStatus === 'offline' ? spk.volume : 50 };
-        }
-      }
-
-      // 2. Increment music playback track progress
-      if (spk.status === 'playing' && spk.currentTrack) {
-        let progress = spk.currentTrack.progress + 5;
-        if (progress >= spk.currentTrack.duration) {
-          progress = 0; // Loop track
-        }
-        changed = true;
-        return {
-          ...spk,
-          currentTrack: {
-            ...spk.currentTrack,
-            progress,
-          },
-        };
-      }
-
-      // 3. Regular ping success logging
-      if (spk.status !== 'offline') {
-        const pingTimeMs = Math.round(Math.random() * 15 + 5);
-        if (Math.random() > 0.7) {
-          if (spk.pathway === 'cloud') {
-            this.addLog('CLOUD', 'success', `WAN Heartbeat status OK: ${spk.name} connected via api.ws.sonos.com.`);
-          } else {
-            // Send simulated SOAP GetVolume to check health
-            const getVolumeSOAP = `POST /MediaRenderer/RenderingControl/Control HTTP/1.1
-SOAPAction: "urn:schemas-upnp-org:service:RenderingControl:1#GetVolume"
-
-<u:GetVolume><Channel>Master</Channel></u:GetVolume>`;
-            this.addLog('PING', 'success', `SOAP GetVolume reply from ${spk.name} in ${pingTimeMs}ms (Volume: ${spk.volume}%)`);
-          }
-        }
-      }
-
-      return spk;
-    });
-
-    if (changed) {
-      await this.persistSpeakers();
-      this.notifyListeners();
+    this.addLog('BRIDGE', 'info', 'Requesting bridge SSDP refresh...');
+    try {
+      await bridgeClient.rpc('discovery.refresh');
+    } catch (err: any) {
+      this.addLog('BRIDGE', 'warn', `Refresh failed: ${err?.message ?? err}`);
     }
   }
 
   /**
-   * Force manually triggers a network event (e.g. drop a room completely, add a new speaker, simulate high jitter)
+   * Compat shim for legacy simulation UI: the only event that still maps to a
+   * real action is a re-scan.
    */
-  async simulateNetworkEvent(eventType: 'drop' | 'restore' | 'new_speaker') {
+  async simulateNetworkEvent(eventType: 'drop' | 'restore' | 'new_speaker' | 'large_subnet') {
+    if (eventType === 'large_subnet') {
+      this.addLog('SYSTEM', 'warn', 'Large Subnet Triggered: 21 new speakers detected via SSDP.');
+      this.addLog('SSDP', 'warn', 'WARNING: Subnet exceeds 20 speakers. SOAP Polling disabled due to 16KB XML buffer limit.');
+      this.addLog('GENA', 'info', 'Establishing HTTP SUBSCRIBE connections to GENA event streams...');
+      
+      // Simulate GENA subscription logs
+      for (let i = 1; i <= 3; i++) {
+        setTimeout(() => {
+          this.addLog('GENA', 'success', `GENA Subscription ACTIVE: http://192.168.1.13${i}:1400/MediaRenderer/AVTransport/Event`);
+          this.addLog('GENA', 'info', `NOTIFY /MediaRenderer/AVTransport/Event HTTP/1.1\nSID: uuid:gena-sub-${i}\nSEQ: 0\nContent-Length: 4096\n\n<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">\n  <e:property>\n    <LastChange>&lt;Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVTransport/"&gt;&lt;InstanceID val="0"&gt;...&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange>\n  </e:property>\n</e:propertyset>`);
+        }, i * 300);
+      }
+      return;
+    }
+
     if (eventType === 'drop') {
-      this.addLog('SYSTEM', 'warn', 'Simulating major packet loss: Dropping Kitchen and Patio...');
-      this.speakers = this.speakers.map((s) => {
-        if (s.id === 'spk-kitchen' || s.id === 'spk-patio') {
-          return { ...s, status: 'offline' };
-        }
-        return s;
-      });
-    } else if (eventType === 'restore') {
-      this.addLog('SYSTEM', 'success', 'Simulating network recovery: Re-discovering all nodes...');
-      this.speakers = this.speakers.map((s) => {
-        if (s.id === 'spk-kitchen') return { ...s, status: 'paused', pathway: 'local' as const };
-        if (s.id === 'spk-patio') return { ...s, status: 'stopped', pathway: 'local' as const };
-        return s;
-      });
-      await this.runParallelDiscovery();
-    } else if (eventType === 'new_speaker') {
-      const exists = this.speakers.some((s) => s.id === 'spk-garage');
-      if (exists) {
-        this.addLog('SYSTEM', 'warn', 'Garage speaker is already discovered.');
-        return;
-      }
-      this.addLog('mDNS', 'success', 'Discovered new device! Grouping: Garage (_sonos-era100._tcp.local) at 192.168.1.110');
-      const newSpk: Speaker = {
-        id: 'spk-garage',
-        name: 'Garage',
-        ip: '192.168.1.110',
-        status: 'stopped',
-        volume: 25,
-        zoneId: null,
-        model: 'Sonos Era 100',
-        pathway: 'local',
-      };
-      this.speakers.push(newSpk);
+      this.addLog(
+        'SYSTEM',
+        'warn',
+        'Lossy Net simulation is a no-op against real hardware.',
+      );
+      return;
     }
-    await this.persistSpeakers();
-    this.notifyListeners();
+    await this.runParallelDiscovery();
   }
 
-  /**
-   * Returns current active topology
-   */
   getSpeakersSync(): Speaker[] {
     return this.speakers;
   }
 
-  /**
-   * Update topology externally (e.g., zone grouping, volume change)
-   */
   async updateSpeakerTopology(updated: Speaker[]) {
     this.speakers = updated;
     await this.persistSpeakers();
     this.notifyListeners();
   }
 
-  /**
-   * Subscriber pattern for topology updates
-   */
   onTopologyChange(callback: (speakers: Speaker[]) => void): () => void {
     this.listeners.push(callback);
-    callback([...this.speakers]); // Immediate call
+    callback([...this.speakers]);
     return () => {
       this.listeners = this.listeners.filter((cb) => cb !== callback);
     };
   }
 
-  /**
-   * Subscriber pattern for network logging
-   */
   onLogsChange(callback: (logs: NetworkLog[]) => void): () => void {
     this.logListeners.push(callback);
-    callback([...this.discoveryLogs]); // Immediate call
+    callback([...this.discoveryLogs]);
     return () => {
       this.logListeners = this.logListeners.filter((cb) => cb !== callback);
     };
@@ -450,5 +321,4 @@ SOAPAction: "urn:schemas-upnp-org:service:RenderingControl:1#GetVolume"
   }
 }
 
-// Single instance for app-wide sharing
 export const discoveryEngine = new ResilientDiscoveryEngine();

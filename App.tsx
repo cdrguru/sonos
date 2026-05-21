@@ -11,6 +11,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { discoveryEngine } from './core/discovery';
 import { stateStore, Speaker } from './core/stateStore';
+import { bridgeClient, BridgeStatus } from './core/bridgeClient';
 import { MainLayout } from './components/MainLayout';
 import { TransportBar } from './components/TransportBar';
 
@@ -18,6 +19,7 @@ export default function App() {
   const [speakers, setSpeakers] = useState<Speaker[]>([]);
   const [selectedSpeaker, setSelectedSpeaker] = useState<Speaker | null>(null);
   const [loading, setLoading] = useState(true);
+  const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>('idle');
 
   // Start discovery engine and subscribe to state store updates
   useEffect(() => {
@@ -47,11 +49,18 @@ export default function App() {
       }
     });
 
+    const unsubBridge = bridgeClient.subscribeStatus(setBridgeStatus);
+
     return () => {
       active = false;
       discoveryEngine.stop();
       unsubscribe();
+      unsubBridge();
     };
+  }, [selectedSpeaker]);
+
+  useEffect(() => {
+    stateStore.setSelectedSpeakerId(selectedSpeaker ? selectedSpeaker.id : null);
   }, [selectedSpeaker]);
 
   const handleRefreshScan = async () => {
@@ -80,6 +89,18 @@ export default function App() {
 
         {/* Global Networking Status Badges */}
         <View style={styles.systemStatusRow}>
+          <TouchableOpacity
+            style={[styles.bridgeBadge, bridgeBadgeStyle(bridgeStatus)]}
+            onPress={() => bridgeClient.reconnectNow()}
+            accessibilityRole="button"
+            accessibilityLabel={`Bridge ${bridgeStatus}. Tap to reconnect.`}
+          >
+            <View style={[styles.bridgeDot, bridgeDotStyle(bridgeStatus)]} />
+            <Text style={[styles.bridgeBadgeText, bridgeTextStyle(bridgeStatus)]}>
+              BRIDGE {bridgeStatus.toUpperCase()}
+            </Text>
+          </TouchableOpacity>
+
           <View style={styles.statusBadge}>
             <View style={styles.badgeIndicatorDot} />
             <Text style={styles.statusBadgeText}>
@@ -120,6 +141,39 @@ export default function App() {
       />
     </SafeAreaView>
   );
+}
+
+function bridgeBadgeStyle(status: BridgeStatus) {
+  switch (status) {
+    case 'connected':
+      return { borderColor: 'rgba(52, 211, 153, 0.4)', backgroundColor: 'rgba(52, 211, 153, 0.10)' };
+    case 'connecting':
+      return { borderColor: 'rgba(251, 191, 36, 0.4)', backgroundColor: 'rgba(251, 191, 36, 0.10)' };
+    default:
+      return { borderColor: 'rgba(239, 68, 68, 0.4)', backgroundColor: 'rgba(239, 68, 68, 0.10)' };
+  }
+}
+
+function bridgeDotStyle(status: BridgeStatus) {
+  switch (status) {
+    case 'connected':
+      return { backgroundColor: '#34d399' };
+    case 'connecting':
+      return { backgroundColor: '#fbbf24' };
+    default:
+      return { backgroundColor: '#f87171' };
+  }
+}
+
+function bridgeTextStyle(status: BridgeStatus) {
+  switch (status) {
+    case 'connected':
+      return { color: '#34d399' };
+    case 'connecting':
+      return { color: '#fbbf24' };
+    default:
+      return { color: '#f87171' };
+  }
 }
 
 // Decorative logo
@@ -185,6 +239,26 @@ const styles = StyleSheet.create({
   systemStatusRow: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  bridgeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 20,
+    borderWidth: 0.5,
+    marginRight: 8,
+  },
+  bridgeDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    marginRight: 6,
+  },
+  bridgeBadgeText: {
+    fontSize: 9,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
   },
   statusBadge: {
     flexDirection: 'row',

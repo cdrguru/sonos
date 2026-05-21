@@ -1,6 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Audio as ExpoAudio } from 'expo-av';
 import { discoveryEngine, Speaker, NetworkLog, SpeakerEQ, DEFAULT_EQ } from './discovery';
 import { LocalFirstSyncEngine, SpeakerVolumeState } from './syncEngine';
+import { bridgeClient } from './bridgeClient';
 export { Speaker, NetworkLog, SpeakerEQ, DEFAULT_EQ };
 
 export interface PlayQueueItem {
@@ -9,6 +11,7 @@ export interface PlayQueueItem {
   artist: string;
   artwork: string;
   duration: number; // in seconds
+  url?: string;
 }
 
 export interface ZoneGroup {
@@ -54,6 +57,12 @@ export class StateStore {
   private sceneListeners: ((scenes: Scene[]) => void)[] = [];
   private queueListeners: ((queue: PlayQueueItem[]) => void)[] = [];
 
+  // Audio Playback Engine variables
+  private activeSound: ExpoAudio.Sound | null = null;
+  private activeUrl: string | null = null;
+  private selectedSpeakerId: string | null = null;
+  private isAudioInitializing: boolean = false;
+
   constructor() {
     // Sync with Discovery Engine topology changes
     discoveryEngine.onTopologyChange((freshSpeakers) => {
@@ -62,11 +71,11 @@ export class StateStore {
 
     // Seed default play queue (overwritten by loadPersistedState if cached)
     this.playQueues['global-queue'] = [
-      { id: 'q1', title: 'Ocean Eyes', artist: 'Billie Eilish', artwork: 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=150&auto=format&fit=crop&q=60', duration: 200 },
-      { id: 'q2', title: 'Blinding Lights', artist: 'The Weeknd', artwork: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=150&auto=format&fit=crop&q=60', duration: 200 },
-      { id: 'q3', title: 'Time', artist: 'Pink Floyd', artwork: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=150&auto=format&fit=crop&q=60', duration: 421 },
-      { id: 'q4', title: 'Come Away With Me', artist: 'Norah Jones', artwork: 'https://images.unsplash.com/photo-1459749411175-04bf5292ceea?w=150&auto=format&fit=crop&q=60', duration: 198 },
-      { id: 'q5', title: 'Bad Guy', artist: 'Billie Eilish', artwork: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=150&auto=format&fit=crop&q=60', duration: 194 },
+      { id: 'q1', title: 'Ocean Eyes', artist: 'Billie Eilish', artwork: 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=150&auto=format&fit=crop&q=60', duration: 200, url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' },
+      { id: 'q2', title: 'Blinding Lights', artist: 'The Weeknd', artwork: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=150&auto=format&fit=crop&q=60', duration: 200, url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3' },
+      { id: 'q3', title: 'Time', artist: 'Pink Floyd', artwork: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=150&auto=format&fit=crop&q=60', duration: 421, url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3' },
+      { id: 'q4', title: 'Come Away With Me', artist: 'Norah Jones', artwork: 'https://images.unsplash.com/photo-1459749411175-04bf5292ceea?w=150&auto=format&fit=crop&q=60', duration: 198, url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3' },
+      { id: 'q5', title: 'Bad Guy', artist: 'Billie Eilish', artwork: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=150&auto=format&fit=crop&q=60', duration: 194, url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3' },
     ];
 
     // Hydrate persisted scenes + queue from AsyncStorage
@@ -188,137 +197,58 @@ export class StateStore {
     });
     this.notifyListeners();
 
-    // If speaker is using Cloud routing already, skip SOAP trial and send WAN request directly
-    if (speaker.pathway === 'cloud') {
-      this.logCloud('info', `Routing SetVolume directly to WAN (Sticky Cloud Fallback path) for ${speaker.name}.`);
-      this.dispatchCloudSetVolume(speakerId, newVolume, version, correlationId);
-    } else {
-      // Formulate a simulated SOAP payload to log (RenderingControl:1 SetVolume)
-      this.logSOAPSetVolume(speaker.ip, newVolume, correlationId);
-      // Dispatch the asynchronous local UPnP execution block
-      this.simulateHardwareSetVolume(speakerId, newVolume, version, correlationId);
+    // Dispatch the real LAN volume change via the bridge.
+    void this.simulateHardwareSetVolume(speakerId, newVolume, version, correlationId);
+  }
+
+  private async simulateHardwareSetVolume(
+    speakerId: string,
+    volume: number,
+    version: number,
+    correlationId: string,
+  ) {
+    // Drop if a newer local write superseded this one (LWW resolution).
+    if (this.speakerVersions[speakerId] > version) return;
+    try {
+      await bridgeClient.rpc('player.setVolume', { playerId: speakerId, volume });
+      // Bridge will also push a player.volume event through the topology path,
+      // but we close the sync engine immediately so the fader settles fast.
+      if (this.speakerVersions[speakerId] === version && this.syncEngines[speakerId]) {
+        this.syncEngines[speakerId].receiveHardwareUpdate(volume, version, correlationId);
+      }
+      this.speakers = this.speakers.map((s) => {
+        if (s.id !== speakerId) return s;
+        const engine = this.syncEngines[s.id];
+        return {
+          ...s,
+          isUncalibrated: false,
+          pathway: 'local' as const,
+          volume: engine ? engine.getDisplayVolume() : s.volume,
+        };
+      });
+      this.notifyListeners();
+    } catch (err: any) {
+      this.logNetwork(
+        'warn',
+        `Bridge SetVolume failed for ${speakerId} (Tx: ${correlationId}): ${err?.message ?? err}`,
+      );
+      this.speakers = this.speakers.map((s) =>
+        s.id === speakerId ? { ...s, isUncalibrated: true } : s,
+      );
+      this.notifyListeners();
     }
   }
 
-  private simulateHardwareSetVolume(speakerId: string, volume: number, version: number, correlationId: string) {
-    setTimeout(async () => {
-      // Discard this ack if a newer local write superseded it (LWW Resolution)
-      if (this.speakerVersions[speakerId] > version) {
-        return;
-      }
-
-      // Patio has 100% network timeout, others have 10%
-      const shouldTimeout = Math.random() > 0.90 || speakerId === 'spk-patio'; 
-
-      if (shouldTimeout) {
-        this.logNetwork('warn', `UPnP Timeout (504 Gateway Timeout) on speaker ${speakerId}. Initiating WAN Cloud Failover routing...`);
-        
-        // Execute Cloud-Fallback command route
-        this.dispatchCloudSetVolume(speakerId, volume, version, correlationId);
-      } else {
-        this.logNetwork('success', `SOAP Reply: SetVolume 200 OK for speaker ${speakerId} (Tx: ${correlationId}).`);
-        
-        // Finalize transaction with matching correlation ID
-        if (this.syncEngines[speakerId]) {
-          this.syncEngines[speakerId].receiveHardwareUpdate(volume, version, correlationId);
-        }
-
-        this.speakers = this.speakers.map((s) => {
-          if (s.id === speakerId) {
-            return { ...s, isUncalibrated: false, pathway: 'local' as const };
-          }
-          return s;
-        });
-
-        // Re-read display volume from sync engine
-        this.speakers = this.speakers.map((s) => {
-          const engine = this.syncEngines[s.id];
-          return {
-            ...s,
-            volume: engine ? engine.getDisplayVolume() : s.volume,
-          };
-        });
-
-        await discoveryEngine.updateSpeakerTopology(this.speakers);
-        this.notifyListeners();
-      }
-    }, 200);
-  }
-
-  private dispatchCloudSetVolume(speakerId: string, volume: number, version: number, correlationId: string) {
-    // Generate secure HTTPS request headers
-    const bearerToken = 'Bearer us_oauth_token_73d2a091e98bc0098f42bc83c401ee0a';
-    const httpsLog = `POST /control/api/v1/players/${speakerId}/playerVolume HTTP/1.1
-Host: api.ws.sonos.com
-Authorization: ${bearerToken}
-Content-Type: application/json
-
-{
-  "volume": ${volume}
-}`;
-    
-    this.logCloud('info', `Cloud Fallback API Request Sent:\n${httpsLog}`);
-
-    // Update route pathway state to 'cloud'
-    this.speakers = this.speakers.map((s) => {
-      if (s.id === speakerId) {
-        return { ...s, pathway: 'cloud' as const, isUncalibrated: false }; // clear local warnings since cloud WAN succeeds
-      }
-      return s;
-    });
-    this.notifyListeners();
-
-    // WAN response latency is slightly slower than LAN (approx 350ms)
-    setTimeout(async () => {
-      if (this.speakerVersions[speakerId] > version) {
-        return;
-      }
-
-      // Simulate incoming server WebSocket push notification payload conforming to schemas
-      const wsNotification = `{
-  "namespace": "groupVolume",
-  "event": "groupVolume",
-  "groupId": "RINCON_${speakerId.toUpperCase()}_01400:509930175",
-  "body": {
-    "volume": ${volume},
-    "muted": false,
-    "fixed": false
-  }
-}`;
-      
-      this.logCloud('success', `WebSocket Event received (Gateway Notification):\n${wsNotification}`);
-
-      // Finalize syncEngine state
-      if (this.syncEngines[speakerId]) {
-        this.syncEngines[speakerId].receiveHardwareUpdate(volume, version, correlationId);
-      }
-
-      this.speakers = this.speakers.map((s) => {
-        if (s.id === speakerId) {
-          return {
-            ...s,
-            volume: this.syncEngines[speakerId].getDisplayVolume(),
-          };
-        }
-        return s;
-      });
-
-      await discoveryEngine.updateSpeakerTopology(this.speakers);
-      this.notifyListeners();
-    }, 350);
-  }
-
-  private logSOAPSetVolume(ip: string, volume: number, txId: string) {
-    const rawSOAP = `POST /MediaRenderer/RenderingControl/Control HTTP/1.1
-Host: ${ip}:1400
-SOAPAction: "urn:schemas-upnp-org:service:RenderingControl:1#SetVolume"
-Tx-Correlation-ID: ${txId}
-
-<u:SetVolume>
-  <DesiredVolume>${volume}</DesiredVolume>
-</u:SetVolume>`;
-    
-    discoveryEngine.addLog('SSDP', 'info', `Sending SOAP Volume Set:\n${rawSOAP}`);
+  private dispatchCloudSetVolume(
+    speakerId: string,
+    volume: number,
+    version: number,
+    correlationId: string,
+  ) {
+    // Cloud path is currently unused — Path B (LAN-direct via bridge) handles
+    // everything. Keep the entry point so legacy callers still resolve; just
+    // funnel into the same bridge RPC.
+    return this.simulateHardwareSetVolume(speakerId, volume, version, correlationId);
   }
 
   private logNetwork(level: NetworkLog['level'], message: string) {
@@ -352,25 +282,21 @@ Tx-Correlation-ID: ${txId}
 
     const nextStatus = speaker.status === 'playing' ? 'paused' : 'playing';
 
-    if (speaker.pathway === 'cloud') {
-      const command = nextStatus === 'playing' ? 'play' : 'pause';
-      this.logCloud('info', `POST /control/api/v1/players/${speakerId}/${command} HTTP/1.1`);
-    } else {
-      const soapAction = nextStatus === 'playing' ? 'Play' : 'Pause';
-      discoveryEngine.addLog('SSDP', 'info', `POST /MediaRenderer/AVTransport/Control HTTP/1.1\nSOAPAction: "urn:schemas-upnp-org:service:AVTransport:1#${soapAction}"`);
-    }
-
     this.speakers = this.speakers.map((s) => {
-      if (s.id === speakerId) {
-        return { ...s, status: nextStatus };
-      }
-      if (speaker.zoneId && s.zoneId === speaker.zoneId) {
-        return { ...s, status: nextStatus };
-      }
+      if (s.id === speakerId) return { ...s, status: nextStatus };
+      if (speaker.zoneId && s.zoneId === speaker.zoneId) return { ...s, status: nextStatus };
       return s;
     });
     this.notifyListeners();
     await discoveryEngine.updateSpeakerTopology(this.speakers);
+
+    try {
+      await bridgeClient.rpc(nextStatus === 'playing' ? 'transport.play' : 'transport.pause', {
+        playerId: speakerId,
+      });
+    } catch (err: any) {
+      this.logNetwork('warn', `Bridge transport.${nextStatus} failed: ${err?.message ?? err}`);
+    }
   }
 
   /**
@@ -385,20 +311,13 @@ Tx-Correlation-ID: ${txId}
 
     const newZoneId = target.zoneId || `zone-${targetSpeakerId}`;
 
-    if (drag.pathway === 'cloud' || target.pathway === 'cloud') {
-      const payload = `{"playerIds": ["${drag.id}", "${target.id}"]}`;
-      this.logCloud('info', `POST /control/api/v1/households/h1/groups/createGroup HTTP/1.1\nPayload: ${payload}`);
-    } else {
-      discoveryEngine.addLog('SSDP', 'info', `POST /MediaRenderer/AVTransport/Control HTTP/1.1\nSOAPAction: "urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI"\nURI: x-rincon-join://${target.id}`);
-    }
-
     this.speakers = this.speakers.map((s) => {
       if (s.id === dragSpeakerId) {
-        return { 
-          ...s, 
-          zoneId: newZoneId, 
+        return {
+          ...s,
+          zoneId: newZoneId,
           status: target.status,
-          currentTrack: target.currentTrack ? { ...target.currentTrack } : undefined 
+          currentTrack: target.currentTrack ? { ...target.currentTrack } : undefined,
         };
       }
       if (s.id === targetSpeakerId) {
@@ -409,6 +328,15 @@ Tx-Correlation-ID: ${txId}
 
     this.notifyListeners();
     await discoveryEngine.updateSpeakerTopology(this.speakers);
+
+    try {
+      await bridgeClient.rpc('zone.group', {
+        coordinatorId: targetSpeakerId,
+        memberId: dragSpeakerId,
+      });
+    } catch (err: any) {
+      this.logNetwork('warn', `Bridge zone.group failed: ${err?.message ?? err}`);
+    }
   }
 
   /**
@@ -417,12 +345,6 @@ Tx-Correlation-ID: ${txId}
   async ungroupSpeaker(speakerId: string) {
     const speaker = this.speakers.find((s) => s.id === speakerId);
     if (!speaker) return;
-
-    if (speaker.pathway === 'cloud') {
-      this.logCloud('info', `POST /control/api/v1/groups/${speaker.zoneId}/removePlayer HTTP/1.1\nPlayer: ${speakerId}`);
-    } else {
-      discoveryEngine.addLog('SSDP', 'info', `POST /MediaRenderer/AVTransport/Control HTTP/1.1\nSOAPAction: "urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI"\nURI: x-rincon-standalone`);
-    }
 
     const oldZoneId = speaker.zoneId;
 
@@ -447,6 +369,12 @@ Tx-Correlation-ID: ${txId}
 
     this.notifyListeners();
     await discoveryEngine.updateSpeakerTopology(this.speakers);
+
+    try {
+      await bridgeClient.rpc('zone.ungroup', { playerId: speakerId });
+    } catch (err: any) {
+      this.logNetwork('warn', `Bridge zone.ungroup failed: ${err?.message ?? err}`);
+    }
   }
 
   /**
@@ -472,19 +400,6 @@ Tx-Correlation-ID: ${txId}
     if (!speaker || speaker.status === 'offline') return;
     const newMuted = !(speaker.muted ?? false);
 
-    if (speaker.pathway === 'cloud') {
-      this.logCloud(
-        'info',
-        `POST /control/api/v1/players/${speakerId}/playerVolume/mute HTTP/1.1\nHost: api.ws.sonos.com\nContent-Type: application/json\n\n{ "muted": ${newMuted} }`,
-      );
-    } else {
-      discoveryEngine.addLog(
-        'SSDP',
-        'info',
-        `POST /MediaRenderer/RenderingControl/Control HTTP/1.1\nHost: ${speaker.ip}:1400\nSOAPAction: "urn:schemas-upnp-org:service:RenderingControl:1#SetMute"\n\n<u:SetMute>\n  <Channel>Master</Channel>\n  <DesiredMute>${newMuted ? 1 : 0}</DesiredMute>\n</u:SetMute>`,
-      );
-    }
-
     this.speakers = this.speakers.map((s) => {
       const inZone = speaker.zoneId && s.zoneId === speaker.zoneId;
       if (s.id === speakerId || inZone) {
@@ -494,6 +409,12 @@ Tx-Correlation-ID: ${txId}
     });
     this.notifyListeners();
     await discoveryEngine.updateSpeakerTopology(this.speakers);
+
+    try {
+      await bridgeClient.rpc('player.setMute', { playerId: speakerId, muted: newMuted });
+    } catch (err: any) {
+      this.logNetwork('warn', `Bridge player.setMute failed: ${err?.message ?? err}`);
+    }
   }
 
   /**
@@ -503,22 +424,24 @@ Tx-Correlation-ID: ${txId}
     const speaker = this.speakers.find((s) => s.id === speakerId);
     if (!speaker) return;
 
-    if (speaker.pathway === 'cloud') {
-      this.logCloud(
-        'info',
-        `POST /control/api/v1/players/${speakerId}/audio/eq HTTP/1.1\nContent-Type: application/json\n\n${JSON.stringify(eq, null, 2)}`,
-      );
-    } else {
-      const eqLog = `POST /MediaRenderer/RenderingControl/Control HTTP/1.1\nHost: ${speaker.ip}:1400\nSOAPAction: "urn:schemas-upnp-org:service:RenderingControl:1#SetEQ"\n\n<u:SetEQ><Bass>${eq.bass}</Bass><Treble>${eq.treble}</Treble><Loudness>${eq.loudness ? 1 : 0}</Loudness><NightMode>${eq.nightMode ? 1 : 0}</NightMode></u:SetEQ>`;
-      discoveryEngine.addLog('SSDP', 'info', eqLog);
-    }
-
     this.speakers = this.speakers.map((s) => {
       if (s.id === speakerId) return { ...s, eq: { ...eq } };
       return s;
     });
     this.notifyListeners();
     await discoveryEngine.updateSpeakerTopology(this.speakers);
+
+    try {
+      await bridgeClient.rpc('player.setEQ', {
+        playerId: speakerId,
+        bass: eq.bass,
+        treble: eq.treble,
+        loudness: eq.loudness,
+        nightMode: eq.nightMode,
+      });
+    } catch (err: any) {
+      this.logNetwork('warn', `Bridge player.setEQ failed: ${err?.message ?? err}`);
+    }
   }
 
   /**
@@ -529,23 +452,6 @@ Tx-Correlation-ID: ${txId}
     if (!speaker || !speaker.currentTrack || speaker.status === 'offline') return;
 
     const target = Math.max(0, Math.min(Math.round(seconds), speaker.currentTrack.duration));
-    const hh = Math.floor(target / 3600);
-    const mm = Math.floor((target % 3600) / 60);
-    const ss = target % 60;
-    const timeStr = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
-
-    if (speaker.pathway === 'cloud') {
-      this.logCloud(
-        'info',
-        `POST /control/api/v1/groups/${speaker.zoneId || speakerId}/playback/seek HTTP/1.1\nContent-Type: application/json\n\n{ "positionMillis": ${target * 1000} }`,
-      );
-    } else {
-      discoveryEngine.addLog(
-        'SSDP',
-        'info',
-        `POST /MediaRenderer/AVTransport/Control HTTP/1.1\nHost: ${speaker.ip}:1400\nSOAPAction: "urn:schemas-upnp-org:service:AVTransport:1#Seek"\n\n<u:Seek>\n  <Unit>REL_TIME</Unit>\n  <Target>${timeStr}</Target>\n</u:Seek>`,
-      );
-    }
 
     this.speakers = this.speakers.map((s) => {
       const inZone = speaker.zoneId && s.zoneId === speaker.zoneId;
@@ -556,6 +462,12 @@ Tx-Correlation-ID: ${txId}
     });
     this.notifyListeners();
     await discoveryEngine.updateSpeakerTopology(this.speakers);
+
+    try {
+      await bridgeClient.rpc('transport.seek', { playerId: speakerId, seconds: target });
+    } catch (err: any) {
+      this.logNetwork('warn', `Bridge transport.seek failed: ${err?.message ?? err}`);
+    }
   }
 
   /**
@@ -614,6 +526,7 @@ Tx-Correlation-ID: ${txId}
             artwork: track.artwork,
             duration: track.duration,
             progress: 0,
+            url: track.url,
           },
         };
       }
@@ -710,8 +623,124 @@ Tx-Correlation-ID: ${txId}
     };
   }
 
+  setSelectedSpeakerId(id: string | null) {
+    if (this.selectedSpeakerId !== id) {
+      this.selectedSpeakerId = id;
+      this.syncAudioPlayback();
+    }
+  }
+
+  private async syncAudioPlayback() {
+    if (!this.selectedSpeakerId) {
+      await this.stopAndUnloadActiveSound();
+      return;
+    }
+
+    const speaker = this.speakers.find((s) => s.id === this.selectedSpeakerId);
+    if (!speaker || speaker.status === 'offline' || !speaker.currentTrack?.url) {
+      await this.stopAndUnloadActiveSound();
+      return;
+    }
+
+    const isMuted = speaker.muted ?? false;
+    const targetVolume = isMuted ? 0 : speaker.volume / 100;
+    const targetUrl = speaker.currentTrack.url;
+    const isPlaying = speaker.status === 'playing';
+
+    // 1. If not playing, pause the audio if it's currently loaded
+    if (!isPlaying) {
+      if (this.activeSound) {
+        try {
+          const status = await this.activeSound.getStatusAsync();
+          if (status.isLoaded && status.isPlaying) {
+            await this.activeSound.pauseAsync();
+          }
+        } catch (err: any) {
+          discoveryEngine.addLog('SYSTEM', 'error', `Error pausing audio: ${err.message}`);
+        }
+      }
+      return;
+    }
+
+    // 2. If a new track URL is chosen, load it
+    if (this.activeUrl !== targetUrl) {
+      await this.stopAndUnloadActiveSound();
+
+      if (this.isAudioInitializing) return;
+      this.isAudioInitializing = true;
+
+      try {
+        discoveryEngine.addLog('SYSTEM', 'info', `Streaming track "${speaker.currentTrack.title}" by ${speaker.currentTrack.artist}...`);
+
+        await ExpoAudio.setAudioModeAsync({
+          allowsRecordingIOS: false,
+          playsInSilentModeIOS: true,
+          playThroughEarpieceAndroid: false,
+          staysActiveInBackground: true,
+        });
+
+        const { sound } = await ExpoAudio.Sound.createAsync(
+          { uri: targetUrl },
+          {
+            shouldPlay: true,
+            volume: targetVolume,
+            positionMillis: speaker.currentTrack.progress * 1000,
+          }
+        );
+
+        this.activeSound = sound;
+        this.activeUrl = targetUrl;
+      } catch (err: any) {
+        discoveryEngine.addLog('SYSTEM', 'error', `Failed to stream audio: ${err.message}`);
+      } finally {
+        this.isAudioInitializing = false;
+      }
+    } else if (this.activeSound) {
+      // 3. Otherwise sync volume, play state, and position (seeks)
+      try {
+        const status = await this.activeSound.getStatusAsync();
+        if (status.isLoaded) {
+          // Volume check
+          if (status.volume !== targetVolume) {
+            await this.activeSound.setVolumeAsync(targetVolume);
+          }
+          // Play state check
+          if (!status.isPlaying) {
+            await this.activeSound.playAsync();
+          }
+          // Position drift check (e.g. if seek occurred or there is a drift > 3s)
+          const currentPosSec = status.positionMillis / 1000;
+          const diff = Math.abs(currentPosSec - speaker.currentTrack.progress);
+          if (diff > 3) {
+            await this.activeSound.setPositionAsync(speaker.currentTrack.progress * 1000);
+          }
+        }
+      } catch (err: any) {
+        discoveryEngine.addLog('SYSTEM', 'error', `Error syncing audio properties: ${err.message}`);
+      }
+    }
+  }
+
+  private async stopAndUnloadActiveSound() {
+    if (this.activeSound) {
+      try {
+        const status = await this.activeSound.getStatusAsync();
+        if (status.isLoaded) {
+          await this.activeSound.stopAsync();
+          await this.activeSound.unloadAsync();
+        }
+      } catch (err: any) {
+        discoveryEngine.addLog('SYSTEM', 'error', `Error unloading audio: ${err.message}`);
+      } finally {
+        this.activeSound = null;
+        this.activeUrl = null;
+      }
+    }
+  }
+
   private notifyListeners() {
     this.listeners.forEach((cb) => cb([...this.speakers]));
+    this.syncAudioPlayback();
   }
 
   private notifySceneListeners() {
