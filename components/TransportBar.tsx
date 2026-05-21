@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Speaker, stateStore, PlayQueueItem } from '../core/stateStore';
+import { megaphoneEngine, MegaphoneState } from '../core/megaphone';
 
 interface TransportBarProps {
   selectedSpeaker: Speaker | null;
@@ -23,6 +24,14 @@ export const TransportBar: React.FC<TransportBarProps> = ({
   const [progress, setProgress] = useState(0);
   const [trackWidth, setTrackWidth] = useState(0);
   const [scrubProgress, setScrubProgress] = useState<number | null>(null);
+  const [megaphoneState, setMegaphoneState] = useState<MegaphoneState>('idle');
+  const [megaphoneGain, setMegaphoneGain] = useState(100);
+
+  // Subscribe to megaphone engine state
+  useEffect(() => {
+    const unsub = megaphoneEngine.subscribe(setMegaphoneState);
+    return unsub;
+  }, []);
 
   // Sync internal state with active selected speaker (skip when actively scrubbing)
   useEffect(() => {
@@ -293,7 +302,65 @@ export const TransportBar: React.FC<TransportBarProps> = ({
             <Ionicons name="close-circle" size={12} color="#fca5a5" />
             <Text style={[styles.actionBadgeText, { color: '#fca5a5' }]}>Ungroup All</Text>
           </TouchableOpacity>
+
+          {/* Megaphone Toggle */}
+          <TouchableOpacity
+            style={[
+              styles.actionBadge,
+              megaphoneState === 'live' && styles.megaphoneBadgeLive,
+              megaphoneState === 'requesting' && styles.megaphoneBadgeRequesting,
+              { marginLeft: 6, marginRight: 0 },
+            ]}
+            onPress={() => megaphoneEngine.toggle()}
+            accessibilityRole="button"
+            accessibilityLabel={megaphoneState === 'live' ? 'Turn off megaphone' : 'Turn on megaphone'}
+          >
+            <Ionicons
+              name="mic"
+              size={12}
+              color={megaphoneState === 'live' ? '#ffffff' : '#c084fc'}
+            />
+            <Text
+              style={[
+                styles.actionBadgeText,
+                { color: megaphoneState === 'live' ? '#ffffff' : '#c084fc' },
+              ]}
+            >
+              {megaphoneState === 'live' ? 'MIC LIVE' : megaphoneState === 'requesting' ? 'MIC...' : 'Megaphone'}
+            </Text>
+          </TouchableOpacity>
         </View>
+
+        {/* Megaphone Gain Slider — visible only when live */}
+        {megaphoneState === 'live' && (
+          <View style={styles.megaphoneGainRow}>
+            <Ionicons name="mic" size={10} color="#ef4444" />
+            <TouchableOpacity
+              style={styles.megaphoneGainBtn}
+              onPress={() => {
+                const next = Math.max(0, megaphoneGain - 10);
+                setMegaphoneGain(next);
+                megaphoneEngine.setGain(next / 100);
+              }}
+            >
+              <Ionicons name="remove" size={10} color="#ffffff" />
+            </TouchableOpacity>
+            <View style={styles.megaphoneGainTrack}>
+              <View style={[styles.megaphoneGainFill, { width: `${megaphoneGain}%` }]} />
+            </View>
+            <TouchableOpacity
+              style={styles.megaphoneGainBtn}
+              onPress={() => {
+                const next = Math.min(100, megaphoneGain + 10);
+                setMegaphoneGain(next);
+                megaphoneEngine.setGain(next / 100);
+              }}
+            >
+              <Ionicons name="add" size={10} color="#ffffff" />
+            </TouchableOpacity>
+            <Text style={styles.megaphoneGainLabel}>{megaphoneGain}%</Text>
+          </View>
+        )}
       </View>
     </View>
   );
@@ -544,10 +611,52 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(239, 68, 68, 0.25)',
     marginRight: 0,
   },
+  megaphoneBadgeLive: {
+    backgroundColor: 'rgba(239, 68, 68, 0.35)',
+    borderColor: 'rgba(239, 68, 68, 0.6)',
+  },
+  megaphoneBadgeRequesting: {
+    backgroundColor: 'rgba(192, 132, 252, 0.2)',
+    borderColor: 'rgba(192, 132, 252, 0.4)',
+  },
   actionBadgeText: {
     color: '#a5b4fc',
     fontSize: 9,
     fontWeight: 'bold',
+    marginLeft: 4,
+  },
+  megaphoneGainRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  megaphoneGainBtn: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#1f2937',
+    borderWidth: 0.5,
+    borderColor: '#374151',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginHorizontal: 3,
+  },
+  megaphoneGainTrack: {
+    width: 60,
+    height: 4,
+    backgroundColor: '#1e293b',
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  megaphoneGainFill: {
+    height: '100%',
+    backgroundColor: '#ef4444',
+    borderRadius: 2,
+  },
+  megaphoneGainLabel: {
+    color: '#ef4444',
+    fontSize: 8,
+    fontWeight: '800',
     marginLeft: 4,
   },
 });

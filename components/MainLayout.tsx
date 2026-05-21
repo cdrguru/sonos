@@ -14,6 +14,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Speaker, stateStore, PlayQueueItem, Scene } from '../core/stateStore';
 import { discoveryEngine, NetworkLog } from '../core/discovery';
 import { ChannelStrip } from './ChannelStrip';
+import { Turntable } from './Turntable';
 
 interface MainLayoutProps {
   speakers: Speaker[];
@@ -27,7 +28,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
   setSelectedSpeaker,
 }) => {
   const [networkLogs, setNetworkLogs] = useState<NetworkLog[]>([]);
-  const [activeTab, setActiveTab] = useState<'sources' | 'logs' | 'scenes'>('sources');
+  const [activeTab, setActiveTab] = useState<'sources' | 'logs' | 'scenes' | 'dj'>('sources');
   const [queue, setQueue] = useState<PlayQueueItem[]>([]);
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [newSceneName, setNewSceneName] = useState('');
@@ -125,22 +126,10 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
       icon: 'spotify',
       color: '#1db954',
       tracks: [
-        {
-          id: 'sp1',
-          title: 'Late Night Chill',
-          artist: 'Lofi Generator',
-          duration: 180,
-          artwork: 'https://images.unsplash.com/photo-1518609878373-06d740f60d8b?w=150&q=80',
-          url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'
-        },
-        {
-          id: 'sp2',
-          title: 'Midnight Espresso',
-          artist: 'Hazy Beats',
-          duration: 210,
-          artwork: 'https://images.unsplash.com/photo-1507133750040-4a8f57021571?w=150&q=80',
-          url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3'
-        },
+        { id: 'sp1', title: 'Late Night Chill', artist: 'Lofi Generator', duration: 180, artwork: 'https://images.unsplash.com/photo-1518609878373-06d740f60d8b?w=150&q=80', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' },
+        { id: 'sp2', title: 'Midnight Espresso', artist: 'Hazy Beats', duration: 210, artwork: 'https://images.unsplash.com/photo-1507133750040-4a8f57021571?w=150&q=80', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3' },
+        { id: 'sp3', title: 'Neon Drive', artist: 'Synthwave FM', duration: 240, artwork: 'https://images.unsplash.com/photo-1534796636912-3b95b3ab5986?w=150&q=80', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3' },
+        { id: 'sp4', title: 'Golden Hour', artist: 'Sunset Collective', duration: 195, artwork: 'https://images.unsplash.com/photo-1500099817043-86d46000d58f?w=150&q=80', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3' },
       ],
     },
     {
@@ -149,22 +138,20 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
       icon: 'apple',
       color: '#fc3c44',
       tracks: [
-        {
-          id: 'ap1',
-          title: 'Essentials Mix 2026',
-          artist: 'Apple Curated',
-          duration: 250,
-          artwork: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=150&q=80',
-          url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3'
-        },
-        {
-          id: 'ap2',
-          title: 'Classical Focus',
-          artist: 'Symphony Hall',
-          duration: 320,
-          artwork: 'https://images.unsplash.com/photo-1465847899084-d164df4dedc6?w=150&q=80',
-          url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3'
-        },
+        { id: 'ap1', title: 'Essentials Mix 2026', artist: 'Apple Curated', duration: 250, artwork: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=150&q=80', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3' },
+        { id: 'ap2', title: 'Classical Focus', artist: 'Symphony Hall', duration: 320, artwork: 'https://images.unsplash.com/photo-1465847899084-d164df4dedc6?w=150&q=80', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3' },
+        { id: 'ap3', title: 'Spatial Audio Demo', artist: 'Dolby Atmos Lab', duration: 275, artwork: 'https://images.unsplash.com/photo-1558618666-fcd25c85f82e?w=150&q=80', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-9.mp3' },
+      ],
+    },
+    {
+      id: 'src-tidal',
+      name: 'Tidal HiFi',
+      icon: 'tidal',
+      color: '#00ffff',
+      tracks: [
+        { id: 'td1', title: 'Deep Blue Ocean', artist: 'Ambient Depths', duration: 360, artwork: 'https://images.unsplash.com/photo-1518837695005-2083093ee35b?w=150&q=80', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-10.mp3' },
+        { id: 'td2', title: 'Master Quality Jazz', artist: 'Blue Note Sessions', duration: 290, artwork: 'https://images.unsplash.com/photo-1511192336575-5a79af67a629?w=150&q=80', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-11.mp3' },
+        { id: 'td3', title: 'Bassline Theory', artist: 'Sub Frequency', duration: 225, artwork: 'https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=150&q=80', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-12.mp3' },
       ],
     },
     {
@@ -173,22 +160,21 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
       icon: 'nas',
       color: '#eab308',
       tracks: [
-        {
-          id: 'nas1',
-          title: 'Hotel California (Remaster)',
-          artist: 'Eagles',
-          duration: 390,
-          artwork: 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=150&q=80',
-          url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3'
-        },
-        {
-          id: 'nas2',
-          title: 'Stairway to Heaven',
-          artist: 'Led Zeppelin',
-          duration: 482,
-          artwork: 'https://images.unsplash.com/photo-1506157786151-b8491531f063?w=150&q=80',
-          url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3'
-        },
+        { id: 'nas1', title: 'Hotel California (Remaster)', artist: 'Eagles', duration: 390, artwork: 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=150&q=80', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3' },
+        { id: 'nas2', title: 'Stairway to Heaven', artist: 'Led Zeppelin', duration: 482, artwork: 'https://images.unsplash.com/photo-1506157786151-b8491531f063?w=150&q=80', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3' },
+        { id: 'nas3', title: 'Comfortably Numb (Live)', artist: 'Pink Floyd', duration: 510, artwork: 'https://images.unsplash.com/photo-1598387993281-cecf8b71a8f8?w=150&q=80', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-13.mp3' },
+        { id: 'nas4', title: 'Bohemian Rhapsody', artist: 'Queen', duration: 355, artwork: 'https://images.unsplash.com/photo-1501612780327-45045538702b?w=150&q=80', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-14.mp3' },
+      ],
+    },
+    {
+      id: 'src-yt',
+      name: 'YouTube Music',
+      icon: 'youtube',
+      color: '#ff0000',
+      tracks: [
+        { id: 'yt1', title: 'Lofi Hip Hop Radio', artist: 'ChilledCow', duration: 600, artwork: 'https://images.unsplash.com/photo-1488590528505-98d2b5aba04b?w=150&q=80', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-15.mp3' },
+        { id: 'yt2', title: 'Epic Cinematic Trailer', artist: 'Orchestral FX', duration: 180, artwork: 'https://images.unsplash.com/photo-1478737270239-2f02b77fc618?w=150&q=80', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-16.mp3' },
+        { id: 'yt3', title: 'Acoustic Campfire Session', artist: 'Fireside Folk', duration: 245, artwork: 'https://images.unsplash.com/photo-1504898770365-14faca6a7320?w=150&q=80', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-17.mp3' },
       ],
     },
   ];
@@ -262,9 +248,20 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
               Logs
             </Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tabButton, activeTab === 'dj' && styles.tabButtonActive]}
+            onPress={() => setActiveTab('dj')}
+          >
+            <Ionicons name="disc" size={12} color={activeTab === 'dj' ? '#ffffff' : '#6b7280'} />
+            <Text style={[styles.tabText, activeTab === 'dj' && styles.tabTextActive]}>
+              DJ
+            </Text>
+          </TouchableOpacity>
         </View>
 
-        {activeTab === 'sources' ? (
+        {activeTab === 'dj' ? (
+          <Turntable selectedSpeaker={selectedSpeaker} />
+        ) : activeTab === 'sources' ? (
           <ScrollView style={styles.leftContentScroll} showsVerticalScrollIndicator={false}>
             <Text style={styles.sectionHeader}>Aggregated Services</Text>
             {mediaSources.map((source) => (
