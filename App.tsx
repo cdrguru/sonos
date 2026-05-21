@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   SafeAreaView,
   StyleSheet,
@@ -21,32 +21,18 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>('idle');
 
-  // Start discovery engine and subscribe to state store updates
+  // Mount-once: boot the discovery engine, subscribe to the state store and bridge status.
+  // Note: do NOT depend on `selectedSpeaker` here — that would tear down the bridge on every
+  // selection change and cause a reconnect storm.
   useEffect(() => {
     let active = true;
 
-    // Start discovery engine background loops
     discoveryEngine.start().then(() => {
       if (active) setLoading(false);
     });
 
-    // Subscribe to stateStore updates
     const unsubscribe = stateStore.subscribe((updatedSpeakers) => {
       setSpeakers(updatedSpeakers);
-      
-      // Update currently selected speaker reference if it changes
-      if (selectedSpeaker) {
-        const freshSelected = updatedSpeakers.find((s) => s.id === selectedSpeaker.id);
-        if (freshSelected) {
-          setSelectedSpeaker(freshSelected);
-        }
-      } else if (updatedSpeakers.length > 0 && !selectedSpeaker) {
-        // Default select first online speaker
-        const firstOnline = updatedSpeakers.find((s) => s.status !== 'offline');
-        if (firstOnline) {
-          setSelectedSpeaker(firstOnline);
-        }
-      }
     });
 
     const unsubBridge = bridgeClient.subscribeStatus(setBridgeStatus);
@@ -57,7 +43,31 @@ export default function App() {
       unsubscribe();
       unsubBridge();
     };
+  }, []);
+
+  // Keep `selectedSpeaker` in sync with the latest topology without thrashing
+  // the bridge subscription. Picks first online speaker on initial population.
+  const selectedIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedIdRef.current = selectedSpeaker?.id ?? null;
   }, [selectedSpeaker]);
+
+  useEffect(() => {
+    const currentId = selectedIdRef.current;
+    if (currentId) {
+      const fresh = speakers.find((s) => s.id === currentId);
+      if (fresh && fresh !== selectedSpeaker) {
+        setSelectedSpeaker(fresh);
+      } else if (!fresh && selectedSpeaker) {
+        setSelectedSpeaker(null);
+      }
+      return;
+    }
+    if (speakers.length > 0) {
+      const firstOnline = speakers.find((s) => s.status !== 'offline');
+      if (firstOnline) setSelectedSpeaker(firstOnline);
+    }
+  }, [speakers]);
 
   useEffect(() => {
     stateStore.setSelectedSpeakerId(selectedSpeaker ? selectedSpeaker.id : null);

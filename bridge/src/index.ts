@@ -419,9 +419,30 @@ wss.on('listening', () => {
   log('info', 'SYSTEM', `Bridge WebSocket listening on ws://localhost:${PORT}`);
 });
 
+const HEARTBEAT_INTERVAL_MS = 15_000;
+const aliveClients = new WeakSet<WebSocket>();
+
+setInterval(() => {
+  for (const client of clients) {
+    if (!aliveClients.has(client)) {
+      try {
+        client.terminate();
+      } catch {}
+      clients.delete(client);
+      continue;
+    }
+    aliveClients.delete(client);
+    try {
+      client.ping();
+    } catch {}
+  }
+}, HEARTBEAT_INTERVAL_MS);
+
 wss.on('connection', (ws, req) => {
   clients.add(ws);
-  log('info', 'SYSTEM', `Client connected from ${req.socket.remoteAddress}`);
+  aliveClients.add(ws);
+  ws.on('pong', () => aliveClients.add(ws));
+  log('info', 'SYSTEM', `Client connected from ${req.socket.remoteAddress} (total: ${clients.size})`);
   // Immediately send current topology so the UI shows what we already know.
   send(ws, { kind: 'event', type: 'topology', players: snapshotsToProtocol() });
 
