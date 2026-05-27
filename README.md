@@ -2,6 +2,8 @@
 
 A dark, high-density "mixing board" interface for controlling a multi-room Sonos speaker system — built as a faster, denser alternative to the official Sonos app.
 
+![The Sonos vNEXT Mixer Console: a three-pane mixing board with media sources, vertical channel-strip faders per room, a play queue, and a global transport bar.](docs/screenshot.png)
+
 > **The story.** I was waiting on a Sonos firmware update. It took about an hour. Somewhere in that hour of staring at a spinner I got fed up with the official app and asked Claude to build me a better interface. By the time the firmware finished updating, this app was already built and running — and it controlled my speakers more effectively than the Sonos app on my iPhone.
 >
 > This repo is that app, cleaned up and shared as an example of what you can build in the gaps.
