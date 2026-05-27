@@ -57,6 +57,95 @@ export interface NetworkLog {
 
 const STORAGE_KEY = '@sonos_vnext_speaker_registry';
 
+// Demo speakers used when no LAN bridge is reachable, so the full UI is
+// explorable with zero hardware. Replaced by real topology once the bridge
+// connects.
+const INITIAL_SPEAKERS: Speaker[] = [
+  {
+    id: 'spk-living-room',
+    name: 'Living Room',
+    ip: '192.168.1.101',
+    status: 'playing',
+    volume: 45,
+    zoneId: null,
+    model: 'Sonos Era 300',
+    pathway: 'local',
+    currentTrack: {
+      title: 'Ocean Eyes',
+      artist: 'Billie Eilish',
+      album: 'Dont Smile at Me',
+      artwork: 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=150&auto=format&fit=crop&q=60',
+      duration: 200,
+      progress: 45,
+    },
+  },
+  {
+    id: 'spk-kitchen',
+    name: 'Kitchen',
+    ip: '192.168.1.102',
+    status: 'paused',
+    volume: 30,
+    zoneId: null,
+    model: 'Sonos Era 100',
+    pathway: 'local',
+    currentTrack: {
+      title: 'Blinding Lights',
+      artist: 'The Weeknd',
+      album: 'After Hours',
+      artwork: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=150&auto=format&fit=crop&q=60',
+      duration: 200,
+      progress: 0,
+    },
+  },
+  {
+    id: 'spk-master-bedroom',
+    name: 'Master Bedroom',
+    ip: '192.168.1.103',
+    status: 'stopped',
+    volume: 20,
+    zoneId: null,
+    model: 'Sonos Move 2',
+    pathway: 'local',
+    currentTrack: {
+      title: 'Come Away With Me',
+      artist: 'Norah Jones',
+      album: 'Come Away With Me',
+      artwork: 'https://images.unsplash.com/photo-1459749411175-04bf5292ceea?w=150&auto=format&fit=crop&q=60',
+      duration: 198,
+      progress: 0,
+    },
+  },
+  {
+    id: 'spk-patio',
+    name: 'Patio',
+    ip: '192.168.1.104',
+    status: 'offline',
+    volume: 50,
+    zoneId: null,
+    model: 'Sonos Roam 2',
+    pathway: 'local',
+    currentTrack: undefined,
+  },
+  {
+    id: 'spk-office',
+    name: 'Home Office',
+    ip: '192.168.1.105',
+    status: 'playing',
+    volume: 35,
+    zoneId: null,
+    model: 'Sonos Five',
+    pathway: 'local',
+    currentTrack: {
+      title: 'Time',
+      artist: 'Pink Floyd',
+      album: 'The Dark Side of the Moon',
+      artwork: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=150&auto=format&fit=crop&q=60',
+      duration: 421,
+      progress: 180,
+    },
+  },
+];
+
 function mapBridgePlayerToSpeaker(p: BridgePlayer): Speaker {
   const inZone = p.zoneMemberIds.length > 1;
   return {
@@ -98,6 +187,11 @@ export class ResilientDiscoveryEngine {
   private unsubBridgeTopology: (() => void) | null = null;
   private unsubBridgeStatus: (() => void) | null = null;
 
+  // Simulation fallback (active only while no LAN bridge is connected).
+  private simulating = false;
+  private simIntervalId: ReturnType<typeof setInterval> | null = null;
+  private simGraceTimer: ReturnType<typeof setTimeout> | null = null;
+
   constructor() {
     this.addLog('SYSTEM', 'info', 'ResilientDiscoveryEngine initialized.');
   }
@@ -124,9 +218,12 @@ export class ResilientDiscoveryEngine {
     this.addLog('BRIDGE', 'info', 'Connecting to LAN bridge at ws://localhost:8765');
     this.unsubBridgeStatus = bridgeClient.subscribeStatus((status) => {
       if (status === 'connected') {
+        this.clearSimGrace();
         this.addLog('BRIDGE', 'success', 'Bridge connected. Real LAN discovery online.');
+        if (this.simulating) this.exitSimulation();
       } else if (status === 'disconnected') {
-        this.addLog('BRIDGE', 'warn', 'Bridge disconnected. Falling back to cached topology.');
+        this.addLog('BRIDGE', 'warn', 'Bridge unavailable. Falling back to local simulation.');
+        this.scheduleSimFallback();
       } else if (status === 'connecting') {
         this.addLog('BRIDGE', 'info', 'Bridge connecting...');
       }
@@ -141,6 +238,9 @@ export class ResilientDiscoveryEngine {
     });
 
     bridgeClient.connect();
+    // If the bridge doesn't answer quickly, drop into simulation so the UI
+    // is usable with no hardware.
+    this.scheduleSimFallback();
   }
 
   stop() {
@@ -150,8 +250,109 @@ export class ResilientDiscoveryEngine {
     this.unsubBridgeEvents = null;
     this.unsubBridgeTopology = null;
     this.unsubBridgeStatus = null;
+    this.clearSimGrace();
+    if (this.simIntervalId) {
+      clearInterval(this.simIntervalId);
+      this.simIntervalId = null;
+    }
     bridgeClient.disconnect();
     this.addLog('SYSTEM', 'info', 'Discovery Engine stopped.');
+  }
+
+  isSimulating(): boolean {
+    return this.simulating;
+  }
+
+  // ---------- simulation fallback ----------
+
+  private scheduleSimFallback() {
+    if (this.simulating || this.simGraceTimer) return;
+    this.simGraceTimer = setTimeout(() => {
+      this.simGraceTimer = null;
+      if (bridgeClient.getStatus() !== 'connected' && !this.simulating) {
+        this.enterSimulation();
+      }
+    }, 1200);
+  }
+
+  private clearSimGrace() {
+    if (this.simGraceTimer) {
+      clearTimeout(this.simGraceTimer);
+      this.simGraceTimer = null;
+    }
+  }
+
+  private enterSimulation() {
+    if (this.simulating) return;
+    this.simulating = true;
+    this.clearSimGrace();
+
+    // Seed demo speakers unless the cache already gave us some to bring online.
+    const hasKnown = this.speakers.length > 0;
+    this.speakers = hasKnown
+      ? this.speakers.map((s) =>
+          s.id === 'spk-patio' ? { ...s, status: 'offline' } : { ...s, status: s.status === 'offline' ? 'stopped' : s.status },
+        )
+      : [...INITIAL_SPEAKERS];
+
+    this.addLog('SYSTEM', 'warn', 'No LAN bridge reachable — running in local simulation mode with demo speakers.');
+    this.runSimulatedDiscovery();
+    this.simIntervalId = setInterval(() => this.runSimulatedPings(), 5000);
+    void this.persistSpeakers();
+    this.notifyListeners();
+  }
+
+  private exitSimulation() {
+    if (!this.simulating) return;
+    this.simulating = false;
+    if (this.simIntervalId) {
+      clearInterval(this.simIntervalId);
+      this.simIntervalId = null;
+    }
+    // Drop demo speakers; the bridge's topology sweep repopulates with real ones.
+    this.speakers = [];
+    this.addLog('SYSTEM', 'info', 'Bridge online — leaving simulation mode.');
+    this.notifyListeners();
+  }
+
+  private runSimulatedDiscovery() {
+    this.addLog('SSDP', 'info', 'M-SEARCH * urn:schemas-upnp-org:device:ZonePlayer:1 (simulated)');
+    for (const s of this.speakers) {
+      if (s.status !== 'offline') {
+        this.addLog('SSDP', 'success', `SSDP reply from ${s.name} (${s.ip}) — LOCATION http://${s.ip}:1400/xml/device_description.xml`);
+        this.addLog('mDNS', 'success', `mDNS service: _sonos-${s.id}._tcp.local -> ${s.ip}:1400`);
+      }
+    }
+    this.addLog('SYSTEM', 'success', 'Simulated topology stable.');
+    this.notifyListeners();
+  }
+
+  private runSimulatedPings() {
+    let changed = false;
+    this.speakers = this.speakers.map((spk) => {
+      // Patio randomly drops/recovers to exercise offline handling.
+      if (spk.id === 'spk-patio' && Math.random() > 0.7) {
+        const nextStatus = spk.status === 'offline' ? 'stopped' : 'offline';
+        if (nextStatus === 'offline') {
+          this.addLog('PING', 'warn', `Patio (${spk.ip}) heartbeat lost. Dropping connection.`);
+        } else {
+          this.addLog('SSDP', 'success', `NOTIFY ssdp:alive from Patio (${spk.ip}).`);
+        }
+        changed = true;
+        return { ...spk, status: nextStatus, volume: nextStatus === 'offline' ? spk.volume : 50 };
+      }
+      // Advance playback progress on playing speakers.
+      if (spk.status === 'playing' && spk.currentTrack) {
+        const progress = spk.currentTrack.progress + 5 >= spk.currentTrack.duration ? 0 : spk.currentTrack.progress + 5;
+        changed = true;
+        return { ...spk, currentTrack: { ...spk.currentTrack, progress } };
+      }
+      return spk;
+    });
+    if (changed) {
+      void this.persistSpeakers();
+      this.notifyListeners();
+    }
   }
 
   private async loadSpeakersFromRegistry() {
@@ -188,6 +389,8 @@ export class ResilientDiscoveryEngine {
 
   private applyBridgeTopology(players: BridgePlayer[]) {
     const incoming = players.map(mapBridgePlayerToSpeaker);
+    // Real players arriving means the bridge is authoritative — leave simulation.
+    if (incoming.length > 0 && this.simulating) this.exitSimulation();
     const incomingIds = new Set(incoming.map((s) => s.id));
 
     // Existing speakers not in the new topology are kept but marked offline.
@@ -244,22 +447,33 @@ export class ResilientDiscoveryEngine {
   }
 
   /**
-   * Trigger a fresh SSDP sweep via the bridge.
+   * Trigger a fresh SSDP sweep — via the bridge when connected, otherwise
+   * against the local simulation.
    */
   async runParallelDiscovery() {
-    this.addLog('BRIDGE', 'info', 'Requesting bridge SSDP refresh...');
-    try {
-      await bridgeClient.rpc('discovery.refresh');
-    } catch (err: any) {
-      this.addLog('BRIDGE', 'warn', `Refresh failed: ${err?.message ?? err}`);
+    if (bridgeClient.getStatus() === 'connected') {
+      this.addLog('BRIDGE', 'info', 'Requesting bridge SSDP refresh...');
+      try {
+        await bridgeClient.rpc('discovery.refresh');
+      } catch (err: any) {
+        this.addLog('BRIDGE', 'warn', `Refresh failed: ${err?.message ?? err}`);
+      }
+      return;
     }
+    if (!this.simulating) this.enterSimulation();
+    else this.runSimulatedDiscovery();
   }
 
   /**
-   * Compat shim for legacy simulation UI: the only event that still maps to a
-   * real action is a re-scan.
+   * Manually trigger a network event from the simulation UI. In real-LAN mode
+   * the drop/restore/new_speaker controls are no-ops (hardware drives state);
+   * the large-subnet GENA demo always runs.
    */
   async simulateNetworkEvent(eventType: 'drop' | 'restore' | 'new_speaker' | 'large_subnet') {
+    if (eventType !== 'large_subnet' && bridgeClient.getStatus() === 'connected') {
+      this.addLog('SYSTEM', 'info', `"${eventType}" simulation is a no-op against the live bridge.`);
+      return;
+    }
     if (eventType === 'large_subnet') {
       this.addLog('SYSTEM', 'warn', 'Large Subnet Triggered: 21 new speakers detected via SSDP.');
       this.addLog('SSDP', 'warn', 'WARNING: Subnet exceeds 20 speakers. SOAP Polling disabled due to 16KB XML buffer limit.');
@@ -276,14 +490,40 @@ export class ResilientDiscoveryEngine {
     }
 
     if (eventType === 'drop') {
-      this.addLog(
-        'SYSTEM',
-        'warn',
-        'Lossy Net simulation is a no-op against real hardware.',
+      this.addLog('SYSTEM', 'warn', 'Simulating packet loss: dropping Kitchen and Patio...');
+      this.speakers = this.speakers.map((s) =>
+        s.id === 'spk-kitchen' || s.id === 'spk-patio' ? { ...s, status: 'offline' } : s,
       );
-      return;
+    } else if (eventType === 'restore') {
+      this.addLog('SYSTEM', 'success', 'Simulating network recovery: re-discovering all nodes...');
+      this.speakers = this.speakers.map((s) => {
+        if (s.id === 'spk-kitchen') return { ...s, status: 'paused', pathway: 'local' as const };
+        if (s.id === 'spk-patio') return { ...s, status: 'stopped', pathway: 'local' as const };
+        return s;
+      });
+      this.runSimulatedDiscovery();
+    } else if (eventType === 'new_speaker') {
+      if (this.speakers.some((s) => s.id === 'spk-garage')) {
+        this.addLog('SYSTEM', 'warn', 'Garage speaker is already discovered.');
+        return;
+      }
+      this.addLog('mDNS', 'success', 'Discovered new device: Garage (_sonos-era100._tcp.local) at 192.168.1.110');
+      this.speakers = [
+        ...this.speakers,
+        {
+          id: 'spk-garage',
+          name: 'Garage',
+          ip: '192.168.1.110',
+          status: 'stopped',
+          volume: 25,
+          zoneId: null,
+          model: 'Sonos Era 100',
+          pathway: 'local',
+        },
+      ];
     }
-    await this.runParallelDiscovery();
+    await this.persistSpeakers();
+    this.notifyListeners();
   }
 
   getSpeakersSync(): Speaker[] {

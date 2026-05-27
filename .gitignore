@@ -36,6 +36,9 @@ yarn-error.*
 # Claude Code local settings (personal, per-machine)
 .claude/settings.local.json
 
+# Playwright MCP scratch artifacts
+.playwright-mcp/
+
 # typescript
 *.tsbuildinfo
 

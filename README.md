@@ -39,7 +39,7 @@ npm run web      # recommended for development
 # or: npm run ios / npm run android
 ```
 
-The app starts in simulation mode immediately. The header shows a `BRIDGE` badge — red/disconnected is expected until you start the bridge.
+The app drops into simulation mode after a ~1.2s grace window if no bridge answers, seeding five demo speakers so the whole UI is usable. The header shows a `BRIDGE` badge — red/disconnected is expected until you start the bridge, and the browser console will log harmless `ws://localhost:8765` connection-refused retries in that state.
 
 ### Run against real speakers (LAN bridge)
 

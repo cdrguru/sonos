@@ -209,6 +209,27 @@ export class StateStore {
   ) {
     // Drop if a newer local write superseded this one (LWW resolution).
     if (this.speakerVersions[speakerId] > version) return;
+
+    // Simulation mode: no bridge to confirm, so treat the optimistic write as
+    // the new confirmed value locally instead of flagging it uncalibrated.
+    if (bridgeClient.getStatus() !== 'connected') {
+      if (this.speakerVersions[speakerId] === version && this.syncEngines[speakerId]) {
+        this.syncEngines[speakerId].receiveHardwareUpdate(volume, version, correlationId);
+      }
+      this.speakers = this.speakers.map((s) => {
+        if (s.id !== speakerId) return s;
+        const engine = this.syncEngines[s.id];
+        return {
+          ...s,
+          isUncalibrated: false,
+          pathway: 'local' as const,
+          volume: engine ? engine.getDisplayVolume() : volume,
+        };
+      });
+      this.notifyListeners();
+      return;
+    }
+
     try {
       await bridgeClient.rpc('player.setVolume', { playerId: speakerId, volume });
       // Bridge will also push a player.volume event through the topology path,

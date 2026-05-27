@@ -94,6 +94,7 @@ bridgeClient (core/bridgeClient.ts) ⇄ ws://localhost:8765 ⇄ bridge/ (Node)
 - `stop()` must be called on unmount — `App.tsx` does this in its effect cleanup.
 - Log protocol types: `'SSDP' | 'mDNS' | 'CACHE' | 'PING' | 'SYSTEM' | 'CLOUD'`.
 - On `start()` it also calls `bridgeClient.connect()` and subscribes to `bridgeClient.subscribeTopology` / `subscribeEvents`. Real players pushed by the bridge are merged with the simulated registry before `onTopologyChange` fires, so the rest of the pipeline is mode-agnostic.
+- **Simulation fallback**: if the bridge isn't `connected` within a ~1.2s grace window (`scheduleSimFallback`), `enterSimulation()` seeds `INITIAL_SPEAKERS`, emits simulated SSDP/mDNS discovery logs, and starts a 5s `runSimulatedPings` loop (Patio drop/recover + playback progress). When the bridge connects (`'connected'` status, or real players arrive in `applyBridgeTopology`), `exitSimulation()` stops the loop, clears demo speakers, and lets real topology drive. `isSimulating()` exposes the mode. While no bridge is running the browser console logs benign `ws://localhost:8765` connection-refused errors — `bridgeClient` retries with backoff.
 
 ### `core/syncEngine.ts` — `LocalFirstSyncEngine`
 
@@ -107,7 +108,7 @@ bridgeClient (core/bridgeClient.ts) ⇄ ws://localhost:8765 ⇄ bridge/ (Node)
 
 - Holds live `Speaker[]` and reconciles topology from discovery engine using per-speaker version clocks (LWW).
 - Each speaker gets a lazy-initialized `LocalFirstSyncEngine` instance.
-- **Volume flow**: `setVolume()` → generate `tx-XXXXXXXX` correlation ID → register in sync engine → `simulateHardwareSetVolume()` dispatches `bridgeClient.rpc('player.setVolume', …)`. On success it confirms the sync engine and clears `isUncalibrated`; on failure (bridge disconnected) it logs a warning and marks the speaker `isUncalibrated`.
+- **Volume flow**: `setVolume()` → generate `tx-XXXXXXXX` correlation ID → register in sync engine → `simulateHardwareSetVolume()`. In simulation mode (bridge not `connected`) it confirms the optimistic volume locally. With the bridge connected it dispatches `bridgeClient.rpc('player.setVolume', …)`: success confirms the sync engine and clears `isUncalibrated`; an actual RPC failure logs a warning and marks the speaker `isUncalibrated`.
 - **Control dispatch**: mute, EQ, transport (play/pause/seek/next/prev), and zone group/ungroup all funnel into `bridgeClient.rpc(...)`. The legacy `dispatchCloudSetVolume()` entry point is retained but just funnels into the same bridge RPC (the LAN-direct path handles everything now).
 - **Zone groups**: derived from `Speaker.zoneId` (no separate group table). `groupSpeakers` assigns `zone-<masterId>`; `ungroupSpeaker` auto-collapses zones with ≤1 member. Group volume applies proportional delta across members. In real-LAN mode the bridge's `getAllGroups()` topology is authoritative.
 - Exports: `stateStore`, `getPendingOptimisticVolume(id)`.
